@@ -21,11 +21,11 @@ pub struct Executor {
 impl Executor {
     /// Creates a new executor with the given client and optional context parameters.
     pub fn new_with_config(
-        model_path: String,
+        model_path: &str,
         context_params: Option<LlamaContextParams>,
         callback: Option<fn(&Output)>,
     ) -> Self {
-        let context = LLamaContext::from_file_and_params(&model_path, &context_params);
+        let context = LLamaContext::from_file_and_params(model_path, &context_params);
         Self {
             context,
             context_params,
@@ -34,12 +34,12 @@ impl Executor {
     }
 
     // Creates a new executor with callback for the given model with default context parameters.
-    pub fn new_with_callback(model_path: String, callback: fn(&Output)) -> Self {
+    pub fn new_with_callback(model_path: &str, callback: fn(&Output)) -> Self {
         Self::new_with_config(model_path, None, Some(callback))
     }
 
     /// Creates a new executor for the given model with default context parameters.
-    pub fn new(model_path: String) -> Self {
+    pub fn new(model_path: &str) -> Self {
         Self::new_with_config(model_path, None, None)
     }
 
@@ -129,7 +129,7 @@ impl Executor {
     fn run_model(&self, input: LlamaInvocation) -> Output {
         run_model(&self.context, input, self.context_params(), &self.callback)
     }
-    
+
     fn max_tokens(&self) -> i32 {
         self.context_params().n_ctx
     }
@@ -148,17 +148,6 @@ impl ExecutorTrait for Executor {
     ) -> Self::Output {
         self.run_model(input)
     }
-
-    // Applies the output to the given parameters.
-    fn apply_output_to_parameters(parameters: Parameters, output: &Self::Output) -> Parameters {
-        parameters.with_text(output.to_owned())
-    }
-
-    // Combines two outputs into a single output.
-    fn combine_outputs(output: &Self::Output, other: &Self::Output) -> Self::Output {
-        output.combine(other)
-    }
-
     fn tokens_used(
         &self,
         step: &LLamaStep,
