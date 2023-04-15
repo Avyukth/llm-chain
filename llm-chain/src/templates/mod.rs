@@ -1,5 +1,12 @@
 mod legacy;
+#[cfg(feature = "tera")]
 mod tera;
+
+mod error;
+pub use error::PromptTemplateError;
+use error::PromptTemplateErrorImpl;
+#[cfg(feature = "serialization")]
+mod io;
 
 #[cfg(feature = "serialization")]
 use serde::{Deserialize, Serialize};
@@ -14,14 +21,14 @@ use crate::Parameters;
 /// use llm_chain::{PromptTemplate, Parameters};
 /// let template: PromptTemplate = "Hello {}!".into();
 /// let parameters: Parameters = "World".into();
-/// assert_eq!(template.format(&parameters), "Hello World!");
+/// assert_eq!(template.format(&parameters).unwrap(), "Hello World!");
 /// ```
 /// **Using a custom key**
 /// ```
 /// use llm_chain::{PromptTemplate, Parameters};
 /// let template: PromptTemplate = "Hello {name}!".into();
 /// let parameters: Parameters = vec![("name", "World")].into();
-/// assert_eq!(template.format(&parameters), "Hello World!");
+/// assert_eq!(template.format(&parameters).unwrap(), "Hello World!");
 /// ```
 #[derive(Clone)]
 #[cfg_attr(
@@ -43,8 +50,8 @@ impl PromptTemplate {
         PromptTemplateImpl::new(template).into()
     }
     /// Format the template with the given parameters.
-    pub fn format(&self, parameters: &Parameters) -> String {
-        self.0.format(parameters)
+    pub fn format(&self, parameters: &Parameters) -> Result<String, PromptTemplateError> {
+        self.0.format(parameters).map_err(|e| e.into())
     }
     /// Creates a non-dynmamic prompt template, useful for untrusted inputs.
     pub fn static_string<K: Into<String>>(template: K) -> PromptTemplate {
@@ -60,10 +67,21 @@ impl PromptTemplate {
     /// use llm_chain::{PromptTemplate, Parameters};
     /// let template = PromptTemplate::tera("Hello {{name}}!");
     /// let parameters: Parameters = vec![("name", "World")].into();
-    /// assert_eq!(template.format(&parameters), "Hello World!");
+    /// assert_eq!(template.format(&parameters).unwrap(), "Hello World!");
     /// ```
     pub fn tera<K: Into<String>>(template: K) -> PromptTemplate {
         PromptTemplateImpl::tera(template.into()).into()
+    }
+
+    #[cfg(feature = "tera")]
+    /// Creates a prompt template from a file. The file should be a text file containing the template as a tera template.
+    /// # Examples
+    /// ```no_run
+    /// use llm_chain::PromptTemplate;
+    /// let template = PromptTemplate::from_file("template.txt").unwrap();
+    /// ```
+    pub fn from_file<K: AsRef<std::path::Path>>(path: K) -> Result<PromptTemplate, std::io::Error> {
+        io::read_prompt_template_file(path)
     }
 }
 
@@ -89,12 +107,16 @@ impl PromptTemplateImpl {
         PromptTemplateImpl::Legacy(legacy::PromptTemplate::new(template))
     }
 
-    pub fn format(&self, parameters: &Parameters) -> String {
+    pub fn format(&self, parameters: &Parameters) -> Result<String, PromptTemplateErrorImpl> {
         match self {
-            PromptTemplateImpl::Static(template) => template.clone(),
-            PromptTemplateImpl::Legacy(template) => template.format(parameters),
+            PromptTemplateImpl::Static(template) => Ok(template.clone()),
+            PromptTemplateImpl::Legacy(template) => template
+                .format(parameters)
+                .map_err(PromptTemplateErrorImpl::LegacyTemplateError),
             #[cfg(feature = "tera")]
-            PromptTemplateImpl::Tera(template) => tera::render(template, parameters).unwrap(),
+            PromptTemplateImpl::Tera(template) => {
+                tera::render(template, parameters).map_err(|e| e.into())
+            }
         }
     }
 

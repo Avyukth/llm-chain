@@ -1,11 +1,13 @@
 use super::output::Output;
 use super::step::Step;
+use async_openai::error::OpenAIError;
 use llm_chain::tokens::PromptTokensError;
 use llm_chain::traits;
 use llm_chain::Parameters;
 
 use async_trait::async_trait;
 use llm_chain::tokens::TokenCount;
+use llm_chain::traits::StepError;
 use tiktoken_rs::async_openai::num_tokens_from_messages;
 
 use std::sync::Arc;
@@ -34,18 +36,28 @@ impl Executor {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+#[error(transparent)]
+pub enum Error<E: StepError> {
+    OpenAIError(OpenAIError),
+    StepError(#[from] E),
+}
+
+impl<E: StepError> traits::ExecutorError for Error<E> {}
+
 #[async_trait]
 impl traits::Executor for Executor {
     type Step = Step;
     type Output = Output;
     type Token = usize;
+    type Error = Error<<Step as traits::Step>::Error>;
     async fn execute(
         &self,
         input: <<Executor as traits::Executor>::Step as traits::Step>::Output,
-    ) -> Self::Output {
+    ) -> Result<Self::Output, Self::Error> {
         let client = self.client.clone();
-        let res = async move { client.chat().create(input).await.unwrap() }.await;
-        res.into()
+        let res = async move { client.chat().create(input).await }.await;
+        res.map(|x| x.into()).map_err(|e| Error::OpenAIError(e))
     }
     fn tokens_used(
         &self,
@@ -55,13 +67,19 @@ impl traits::Executor for Executor {
         let max_tokens = tiktoken_rs::model::get_context_size(&step.model.to_string());
         let prompt = step.prompt.format(parameters);
 
-        let prompt_with_empty_params = step.prompt.format(&Parameters::new_non_strict());
+        let prompt_with_empty_params = step
+            .prompt
+            .format(&Parameters::new_non_strict())
+            .map_err(|_| PromptTokensError::UnableToCompute)?;
         let num_tokens_with_empty_params =
             num_tokens_from_messages(&step.model.to_string(), &prompt_with_empty_params)
                 .map_err(|_| PromptTokensError::NotAvailable)?;
 
-        let tokens_used = num_tokens_from_messages(&step.model.to_string(), &prompt)
-            .map_err(|_| PromptTokensError::NotAvailable)?;
+        let tokens_used = num_tokens_from_messages(
+            &step.model.to_string(),
+            &prompt.map_err(|_| PromptTokensError::UnableToCompute)?,
+        )
+        .map_err(|_| PromptTokensError::NotAvailable)?;
 
         Ok(TokenCount::new(
             max_tokens as i32,
