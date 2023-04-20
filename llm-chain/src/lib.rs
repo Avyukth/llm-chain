@@ -21,8 +21,9 @@ pub mod vectorstores;
 mod parameters;
 #[cfg(feature = "serialization")]
 pub mod serialization;
-mod templates;
 pub mod traits;
+
+pub mod schema;
 
 pub mod frame;
 
@@ -30,12 +31,17 @@ pub mod tokens;
 
 pub mod output;
 
-#[cfg(feature = "serialization")]
 pub mod parsing;
 
-#[cfg(feature = "serialization")]
 pub mod tools;
+
+pub mod prompt;
+
+pub mod text_splitter;
 
 pub use parameters::Parameters;
 
-pub use templates::{PromptTemplate, PromptTemplateError};
+pub use text_splitter::{NaiveWhitespaceSplitter, TextSplitter};
+
+#[deprecated(note = "Use llm_chain::prompt! instead")]
+pub use prompt::{PromptTemplate, PromptTemplateError};

@@ -14,7 +14,8 @@ use std::{error::Error, fmt::Debug};
 use crate::{
     chains::sequential,
     output::Output,
-    tokens::{PromptTokensError, TokenCount},
+    schema::{Document, EmptyMetadata},
+    tokens::{PromptTokensError, TokenCount, Tokenizer, TokenizerError},
     Parameters,
 };
 use async_trait::async_trait;
@@ -45,6 +46,7 @@ impl<T: ?Sized> StepExt for T where T: Step {}
 
 /// The `StepExt` trait extends the functionality of the `Step` trait, providing convenience
 /// methods for working with steps.
+#[async_trait]
 pub trait StepExt: Step {
     /// Converts this step into a sequential chain with a single step.
     ///
@@ -56,6 +58,17 @@ pub trait StepExt: Step {
         Self: Sized,
     {
         sequential::Chain::of_one(self)
+    }
+    async fn run<E: Executor<Step = Self> + Send + Sync>(
+        &self,
+        parameters: &Parameters,
+        executor: &E,
+    ) -> Result<E::Output, E::Error>
+    where
+        Self: Sized,
+    {
+        let output = self.format(parameters)?;
+        executor.execute(output).await
     }
 }
 
@@ -75,7 +88,11 @@ pub trait Executor {
     type Error: ExecutorError + Debug + Error + From<<Self::Step as Step>::Error>;
 
     /// The token type used by this executor.
-    type Token;
+    type Token: Clone;
+
+    type StepTokenizer<'a>: Tokenizer<Self::Token>
+    where
+        Self: 'a;
 
     /// Executes the given input and returns the resulting output.
     ///
@@ -110,37 +127,16 @@ pub trait Executor {
         parameters: &Parameters,
     ) -> Result<TokenCount, PromptTokensError>;
 
-    /// Tokenizes a string based on the step.
+    /// Creates a tokenizer, depending on the model used by `step`.
     ///
     /// # Parameters
-    ///
-    /// * `step`: The step used for tokenization.
-    /// * `doc`: The string to tokenize.
+    ///    
+    /// * `step`: The step to get an associated tokenizer for.
     ///
     /// # Returns
     ///
-    /// A `Result` containing a vector of tokens, or an error if there was a problem.
-    fn tokenize_str(
-        &self,
-        step: &Self::Step,
-        doc: &str,
-    ) -> Result<Vec<Self::Token>, PromptTokensError>;
-
-    /// Converts a slice of tokens into a string based on the step.
-    ///
-    /// # Parameters
-    ///
-    /// * `step`: The step used for conversion.
-    /// * `tokens`: The slice of tokens to convert.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing a string, or an error if there was a problem.
-    fn to_string(
-        &self,
-        step: &Self::Step,
-        tokens: &[Self::Token],
-    ) -> Result<String, PromptTokensError>;
+    /// A `Result` containing a tokenizer, or an error if there was a problem.
+    fn get_tokenizer(&self, step: &Self::Step) -> Result<Self::StepTokenizer<'_>, TokenizerError>;
 }
 
 /// This marker trait is needed so the concrete VectorStore::Error can have a derived From<Embeddings::Error>
@@ -150,10 +146,20 @@ pub trait EmbeddingsError {}
 pub trait Embeddings {
     type Error: Debug + Error + EmbeddingsError;
     async fn embed_texts(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, Self::Error>;
+    async fn embed_query(&self, query: String) -> Result<Vec<f32>, Self::Error>;
 }
 
 #[async_trait]
-pub trait VectorStore<E: Embeddings> {
+pub trait VectorStore<E, M = EmptyMetadata>
+where
+    E: Embeddings,
+{
     type Error: Debug + Error + From<<E as Embeddings>::Error>;
     async fn add_texts(&self, texts: Vec<String>) -> Result<Vec<String>, Self::Error>;
+    async fn add_documents(&self, documents: Vec<Document<M>>) -> Result<Vec<String>, Self::Error>;
+    async fn similarity_search(
+        &self,
+        query: String,
+        limit: u32,
+    ) -> Result<Vec<Document<M>>, Self::Error>;
 }

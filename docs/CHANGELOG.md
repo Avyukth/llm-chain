@@ -8,15 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [0.6.0] 2023-04-17
+
 ### Added
 
 - You can now create templates using the `tera` template language
+- New prompt system shipped, prompts can now be used by both Chat and completion style models
+- Updated LLaMA.cpp to the latest version
 
 ### Changed
 
 - Templates now return Results rather than panic on errors
 - Executors now return results rather than panic on errors
--
 
 ## [0.5.0] 2023-04-14
 

@@ -11,18 +11,20 @@ use crate::output::Output;
 use crate::traits::ExecutorError;
 use crate::{
     frame::Frame,
-    serialization::StorableEntity,
-    tokens::ExecutorTokenCountExt,
     tokens::PromptTokensError,
     traits::{Executor, Step},
     Parameters,
 };
+use crate::{tokens, traits};
 use futures::future::join_all;
 #[cfg(feature = "serialization")]
 use serde::{
     de::{MapAccess, Visitor},
     Deserialize,
 };
+
+#[cfg(feature = "serialization")]
+use crate::serialization::StorableEntity;
 
 use thiserror::Error;
 
@@ -154,16 +156,26 @@ impl<S: Step> Chain<S> {
         Ok(new_outputs)
     }
 
-    fn chunk_documents<E, T>(
+    fn chunk_documents<'a, E, T>(
         &self,
         v: Vec<Parameters>,
         executor: &E,
         step: &S,
     ) -> Result<Vec<Parameters>, PromptTokensError>
     where
-        E: Executor<Step = S>,
+        E: Executor<Step = S> + 'a,
     {
-        let data: Result<Vec<_>, _> = v.iter().map(|x| executor.split_to_fit(step, x)).collect();
+        let data: Result<Vec<_>, _> = v
+            .iter()
+            .map(|x| {
+                <E as tokens::ExecutorTokenCountExt<
+                    S,
+                    <E as traits::Executor>::Output,
+                    <E as traits::Executor>::Token,
+                    <E as traits::Executor>::StepTokenizer<'a>,
+                >>::split_to_fit(executor, step, x)
+            })
+            .collect();
         let data = data?.iter().flatten().cloned().collect();
         Ok(data)
     }
@@ -227,6 +239,7 @@ impl<'de, S: Step + Deserialize<'de>> Deserialize<'de> for Chain<S> {
 /// Implements the `StorableEntity` trait for the `Chain` struct.
 ///
 /// This implementation provides a method for extracting metadata from a `Chain` instance, in order to identify it
+#[cfg(feature = "serialization")]
 impl<S> StorableEntity for Chain<S>
 where
     S: Step + StorableEntity,

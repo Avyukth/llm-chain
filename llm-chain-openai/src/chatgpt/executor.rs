@@ -1,7 +1,7 @@
 use super::output::Output;
 use super::step::Step;
 use async_openai::error::OpenAIError;
-use llm_chain::tokens::PromptTokensError;
+use llm_chain::tokens::{PromptTokensError, Tokenizer, TokenizerError};
 use llm_chain::traits;
 use llm_chain::Parameters;
 
@@ -29,11 +29,6 @@ impl Executor {
         let client = async_openai::Client::new();
         Self::new(client)
     }
-
-    fn get_bpe_from_model(&self, step: &Step) -> Result<tiktoken_rs::CoreBPE, PromptTokensError> {
-        use tiktoken_rs::get_bpe_from_model;
-        get_bpe_from_model(&step.model.to_string()).map_err(|_| PromptTokensError::NotAvailable)
-    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -51,13 +46,14 @@ impl traits::Executor for Executor {
     type Output = Output;
     type Token = usize;
     type Error = Error<<Step as traits::Step>::Error>;
+    type StepTokenizer<'a> = OpenAITokenizer;
     async fn execute(
         &self,
         input: <<Executor as traits::Executor>::Step as traits::Step>::Output,
     ) -> Result<Self::Output, Self::Error> {
         let client = self.client.clone();
         let res = async move { client.chat().create(input).await }.await;
-        res.map(|x| x.into()).map_err(|e| Error::OpenAIError(e))
+        res.map(|x| x.into()).map_err(Error::OpenAIError)
     }
     fn tokens_used(
         &self,
@@ -65,21 +61,14 @@ impl traits::Executor for Executor {
         parameters: &Parameters,
     ) -> Result<TokenCount, PromptTokensError> {
         let max_tokens = tiktoken_rs::model::get_context_size(&step.model.to_string());
-        let prompt = step.prompt.format(parameters);
-
-        let prompt_with_empty_params = step
-            .prompt
-            .format(&Parameters::new_non_strict())
-            .map_err(|_| PromptTokensError::UnableToCompute)?;
+        let prompt = step.prompt.format(parameters)?;
+        // This approach will break once we add support for non-string valued parameters.
+        let prompt_with_empty_params = step.prompt.format(&parameters.with_placeholder_values())?;
         let num_tokens_with_empty_params =
             num_tokens_from_messages(&step.model.to_string(), &prompt_with_empty_params)
                 .map_err(|_| PromptTokensError::NotAvailable)?;
-
-        let tokens_used = num_tokens_from_messages(
-            &step.model.to_string(),
-            &prompt.map_err(|_| PromptTokensError::UnableToCompute)?,
-        )
-        .map_err(|_| PromptTokensError::NotAvailable)?;
+        let tokens_used = num_tokens_from_messages(&step.model.to_string(), &prompt)
+            .map_err(|_| PromptTokensError::NotAvailable)?;
 
         Ok(TokenCount::new(
             max_tokens as i32,
@@ -87,14 +76,43 @@ impl traits::Executor for Executor {
             num_tokens_with_empty_params as i32,
         ))
     }
-    fn tokenize_str(&self, step: &Step, doc: &str) -> Result<Vec<usize>, PromptTokensError> {
-        Ok(self.get_bpe_from_model(step)?.encode_ordinary(doc))
+
+    fn get_tokenizer(&self, step: &Self::Step) -> Result<OpenAITokenizer, TokenizerError> {
+        Ok(OpenAITokenizer::new(step))
     }
-    fn to_string(&self, step: &Step, tokens: &[usize]) -> Result<String, PromptTokensError> {
+}
+
+pub struct OpenAITokenizer {
+    model_name: String,
+}
+
+impl OpenAITokenizer {
+    pub fn new(step: &Step) -> Self {
+        Self {
+            model_name: step.model.to_string(),
+        }
+    }
+
+    fn get_bpe_from_model(&self) -> Result<tiktoken_rs::CoreBPE, PromptTokensError> {
+        use tiktoken_rs::get_bpe_from_model;
+        get_bpe_from_model(&self.model_name).map_err(|_| PromptTokensError::NotAvailable)
+    }
+}
+
+impl Tokenizer<usize> for OpenAITokenizer {
+    fn tokenize_str(&self, doc: &str) -> Result<Vec<usize>, TokenizerError> {
+        Ok(self
+            .get_bpe_from_model()
+            .map_err(|_| TokenizerError::TokenizationError)?
+            .encode_ordinary(doc))
+    }
+
+    fn to_string(&self, tokens: Vec<usize>) -> Result<String, TokenizerError> {
         let res = self
-            .get_bpe_from_model(step)?
+            .get_bpe_from_model()
+            .map_err(|_e| TokenizerError::ToStringError)?
             .decode(tokens.to_vec())
-            .map_err(|_| PromptTokensError::UnableToCompute)?;
+            .map_err(|_e| TokenizerError::ToStringError)?;
         Ok(res)
     }
 }
